@@ -1,0 +1,76 @@
+name: ML CI/CD
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    outputs:
+      mse: ${{ steps.metrics.outputs.mse }}
+      r2: ${{ steps.metrics.outputs.r2 }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps & Train
+        run: |
+          pip install -r requirements.txt
+          python scripts/train.py
+
+      - name: Read metrics
+        id: metrics
+        run: |
+          MSE=$(jq '.mse' metrics.json)
+          R2=$(jq '.r2_score' metrics.json)
+          echo "mse=$MSE" >> $GITHUB_OUTPUT
+          echo "r2=$R2" >> $GITHUB_OUTPUT
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-artifacts
+          path: |
+            model.pkl
+            metrics.json
+
+  deploy:
+    needs: train
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: model-artifacts
+
+      - name: Compare metrics
+        run: |
+          CURR_R2=${{ needs.train.outputs.r2 }}
+          BEST_R2=${{ vars.BEST_R2 }}
+          if (( $(echo "$CURR_R2 <= $BEST_R2" | bc -l) )); then
+            echo "2022BCS0229 ---- Metric did not improve"
+            exit 0
+          fi
+
+      - name: Login to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Build and Push Image
+        run: |
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/wine_predict_2022bcs0229:latest .
+          docker push ${{ secrets.DOCKER_USERNAME }}/wine_predict_2022bcs0229:latest
+
+      - name: Update BEST_R2
+        run: |
+          gh variable set BEST_R2 -b "${{ needs.train.outputs.r2 }}"
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
