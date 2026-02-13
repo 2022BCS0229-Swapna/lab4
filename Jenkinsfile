@@ -37,12 +37,14 @@ pipeline {
         stage('Read Accuracy') {
             steps {
                 script {
-                    def metrics = readJSON file: 'app/artifacts/metrics.json'
-                    env.CURR_ACC = metrics.accuracy.toString()
+                    def json = readFile('app/artifacts/metrics.json')
+                    def matcher = json =~ /"accuracy"\s*:\s*([0-9.]+)/
+                    env.CURR_ACC = matcher[0][1]
                     echo "Current Accuracy: ${env.CURR_ACC}"
                 }
             }
         }
+
 
         stage('Compare Accuracy') {
             steps {
