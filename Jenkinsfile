@@ -2,20 +2,21 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = "2022bcs0229swapna/wine-infer"
+        DOCKER_CREDS = credentials('dockerhub-creds')
+        BEST_ACC = credentials('best-accuracy')
     }
 
     stages {
 
         stage('Checkout') {
-            steps {
-                checkout scm
-            }
+            steps { checkout scm }
         }
 
         stage('Setup Python Virtual Environment') {
             steps {
                 sh '''
+                apt-get update
+                apt-get install -y python3-venv python3-pip
                 python3 -m venv venv
                 . venv/bin/activate
                 pip install --upgrade pip
@@ -37,8 +38,8 @@ pipeline {
             steps {
                 script {
                     def metrics = readJSON file: 'app/artifacts/metrics.json'
-                    env.CURRENT_ACCURACY = metrics.accuracy.toString()
-                    echo "Current Accuracy: ${env.CURRENT_ACCURACY}"
+                    env.CURR_ACC = metrics.accuracy.toString()
+                    echo "Current Accuracy: ${env.CURR_ACC}"
                 }
             }
         }
@@ -46,41 +47,35 @@ pipeline {
         stage('Compare Accuracy') {
             steps {
                 script {
-                    withCredentials([string(credentialsId: 'best-accuracy', variable: 'BEST_ACCURACY')]) {
-                        if (env.CURRENT_ACCURACY.toFloat() > BEST_ACCURACY.toFloat()) {
-                            env.MODEL_IMPROVED = "true"
-                            echo "Model improved"
-                        } else {
-                            env.MODEL_IMPROVED = "false"
-                            echo "Model did not improve"
-                        }
+                    if (env.CURR_ACC.toFloat() > env.BEST_ACC.toFloat()) {
+                        env.BUILD_IMAGE = "true"
+                        echo "Model improved"
+                    } else {
+                        env.BUILD_IMAGE = "false"
+                        echo "Model did not improve"
                     }
                 }
             }
         }
 
         stage('Build Docker Image') {
-            when {
-                expression { env.MODEL_IMPROVED == "true" }
-            }
+            when { expression { env.BUILD_IMAGE == "true" } }
             steps {
-                script {
-                    docker.build("${IMAGE_NAME}:${BUILD_NUMBER}")
-                }
+                sh '''
+                docker login -u $DOCKER_CREDS_USR -p $DOCKER_CREDS_PSW
+                docker build -t $DOCKER_CREDS_USR/wine:${BUILD_NUMBER} .
+                docker tag $DOCKER_CREDS_USR/wine:${BUILD_NUMBER} $DOCKER_CREDS_USR/wine:latest
+                '''
             }
         }
 
         stage('Push Docker Image') {
-            when {
-                expression { env.MODEL_IMPROVED == "true" }
-            }
+            when { expression { env.BUILD_IMAGE == "true" } }
             steps {
-                script {
-                    docker.withRegistry('', 'dockerhub-creds') {
-                        docker.image("${IMAGE_NAME}:${BUILD_NUMBER}").push()
-                        docker.image("${IMAGE_NAME}:${BUILD_NUMBER}").push("latest")
-                    }
-                }
+                sh '''
+                docker push $DOCKER_CREDS_USR/wine:${BUILD_NUMBER}
+                docker push $DOCKER_CREDS_USR/wine:latest
+                '''
             }
         }
     }
